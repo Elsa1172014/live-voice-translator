@@ -120,7 +120,6 @@ export default function Home() {
 
       const translatedAudio = document.createElement("audio");
       translatedAudio.autoplay = true;
-      translatedAudio.playsInline = true;
       translatedAudio.setAttribute("playsinline", "true");
       document.body.appendChild(translatedAudio);
       audioRef.current = translatedAudio;
