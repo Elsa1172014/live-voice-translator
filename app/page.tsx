@@ -160,8 +160,16 @@ export default function Home() {
         },
         body: offer.sdp,
       });
-      if (!sdpResponse.ok) throw new Error("فشل إنشاء الاتصال الصوتي اللحظي");
-      await peer.setRemoteDescription({ type: "answer", sdp: await sdpResponse.text() });
+      const sdpBody = await sdpResponse.text();
+      if (!sdpResponse.ok) {
+        let detail = sdpBody;
+        try {
+          const parsed = JSON.parse(sdpBody) as { error?: { message?: string } };
+          detail = parsed.error?.message || sdpBody;
+        } catch { /* keep raw error text */ }
+        throw new Error(`OpenAI: ${detail || "فشل إنشاء الاتصال الصوتي اللحظي"}`);
+      }
+      await peer.setRemoteDescription({ type: "answer", sdp: sdpBody });
     } catch (startError) {
       closeSession("لم تبدأ الترجمة");
       setError(startError instanceof Error ? startError.message : "تعذر تشغيل المترجم");
