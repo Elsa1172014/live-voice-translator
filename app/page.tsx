@@ -34,6 +34,11 @@ export default function Home() {
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const nextPlayTimeRef = useRef(0);
   const connectedSessionsRef = useRef(0);
+  const noiseFloorRef = useRef(0.008);
+  const speechFramesRef = useRef(0);
+  const silenceFramesRef = useRef(0);
+  const transmittingRef = useRef(false);
+  const preRollRef = useRef<string[]>([]);
 
   const playAudio = (base64Audio: string) => {
     const context = outputContextRef.current;
@@ -67,6 +72,11 @@ export default function Home() {
     outputContextRef.current = null;
     nextPlayTimeRef.current = 0;
     connectedSessionsRef.current = 0;
+    noiseFloorRef.current = 0.008;
+    speechFramesRef.current = 0;
+    silenceFramesRef.current = 0;
+    transmittingRef.current = false;
+    preRollRef.current = [];
     setListening(false);
     setConnecting(false);
     setStatus(message);
@@ -99,7 +109,12 @@ export default function Home() {
       const [arabicToken, englishToken] = await Promise.all([createToken("ar"), createToken("en")]);
 
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          channelCount: 1,
+        },
       });
       streamRef.current = stream;
       const outputContext = new AudioContext({ sampleRate: 24000 });
@@ -155,15 +170,59 @@ export default function Home() {
       await inputContext.resume();
       inputContextRef.current = inputContext;
       const source = inputContext.createMediaStreamSource(stream);
-      const processor = inputContext.createScriptProcessor(2048, 1, 1);
+      const highPass = inputContext.createBiquadFilter();
+      highPass.type = "highpass";
+      highPass.frequency.value = 110;
+      highPass.Q.value = 0.7;
+      const processor = inputContext.createScriptProcessor(1024, 1, 1);
       const silent = inputContext.createGain();
       silent.gain.value = 0;
       processor.onaudioprocess = (event) => {
         if (!sessionsRef.current.length) return;
-        const audio = { data: pcmToBase64(event.inputBuffer.getChannelData(0)), mimeType: "audio/pcm;rate=16000" };
-        sessionsRef.current.forEach((session) => session.sendRealtimeInput({ audio }));
+        const samples = event.inputBuffer.getChannelData(0);
+        let energy = 0;
+        for (let index = 0; index < samples.length; index += 1) energy += samples[index] * samples[index];
+        const rms = Math.sqrt(energy / samples.length);
+        const threshold = Math.max(0.014, noiseFloorRef.current * 2.8);
+        const encoded = pcmToBase64(samples);
+
+        preRollRef.current.push(encoded);
+        if (preRollRef.current.length > 3) preRollRef.current.shift();
+
+        if (rms > threshold) {
+          speechFramesRef.current += 1;
+          silenceFramesRef.current = 0;
+          if (!transmittingRef.current && speechFramesRef.current >= 2) {
+            transmittingRef.current = true;
+            setStatus("صوت بشري مكتشف — يترجم الآن");
+            for (const buffered of preRollRef.current) {
+              const audio = { data: buffered, mimeType: "audio/pcm;rate=16000" };
+              sessionsRef.current.forEach((session) => session.sendRealtimeInput({ audio }));
+            }
+            preRollRef.current = [];
+            return;
+          }
+        } else {
+          speechFramesRef.current = 0;
+          if (!transmittingRef.current) {
+            noiseFloorRef.current = noiseFloorRef.current * 0.96 + rms * 0.04;
+            return;
+          }
+          silenceFramesRef.current += 1;
+        }
+
+        if (transmittingRef.current) {
+          const audio = { data: encoded, mimeType: "audio/pcm;rate=16000" };
+          sessionsRef.current.forEach((session) => session.sendRealtimeInput({ audio }));
+          if (silenceFramesRef.current >= 9) {
+            transmittingRef.current = false;
+            silenceFramesRef.current = 0;
+            setStatus("متصل — ينتظر صوتًا بشريًا");
+          }
+        }
       };
-      source.connect(processor);
+      source.connect(highPass);
+      highPass.connect(processor);
       processor.connect(silent);
       silent.connect(inputContext.destination);
       processorRef.current = processor;
