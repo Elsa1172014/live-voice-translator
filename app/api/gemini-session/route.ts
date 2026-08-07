@@ -25,7 +25,7 @@ export async function POST(request: Request) {
             outputAudioTranscription: {},
             translationConfig: {
               targetLanguageCode: targetLanguage,
-              echoTargetLanguage: true,
+              echoTargetLanguage: false,
             },
           },
         },
