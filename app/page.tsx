@@ -3,24 +3,9 @@
 import { GoogleGenAI, Modality } from "@google/genai";
 import { useEffect, useRef, useState } from "react";
 
-type Direction = "en-ar" | "ar-en";
-
 type GeminiSession = {
   sendRealtimeInput(input: { audio: { data: string; mimeType: string } }): void;
   close(): void;
-};
-
-const directionCopy = {
-  "en-ar": {
-    source: "English", target: "العربية", targetLanguage: "ar",
-    sourcePlaceholder: "ابدأ الحديث بالإنجليزية…",
-    targetPlaceholder: "ستظهر الترجمة العربية هنا أثناء الكلام",
-  },
-  "ar-en": {
-    source: "العربية", target: "English", targetLanguage: "en",
-    sourcePlaceholder: "ابدأ الحديث بالعربية…",
-    targetPlaceholder: "The English translation appears here while you speak",
-  },
 };
 
 function pcmToBase64(samples: Float32Array) {
@@ -36,20 +21,19 @@ function pcmToBase64(samples: Float32Array) {
 }
 
 export default function Home() {
-  const [direction, setDirection] = useState<Direction>("en-ar");
   const [listening, setListening] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [sourceText, setSourceText] = useState("");
   const [translatedText, setTranslatedText] = useState("");
   const [status, setStatus] = useState("جاهز للبدء");
   const [error, setError] = useState("");
-  const sessionRef = useRef<GeminiSession | null>(null);
+  const sessionsRef = useRef<GeminiSession[]>([]);
   const streamRef = useRef<MediaStream | null>(null);
   const inputContextRef = useRef<AudioContext | null>(null);
   const outputContextRef = useRef<AudioContext | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const nextPlayTimeRef = useRef(0);
-  const copy = directionCopy[direction];
+  const connectedSessionsRef = useRef(0);
 
   const playAudio = (base64Audio: string) => {
     const context = outputContextRef.current;
@@ -73,15 +57,16 @@ export default function Home() {
   const closeSession = (message = "تم إيقاف المحادثة") => {
     processorRef.current?.disconnect();
     streamRef.current?.getTracks().forEach((track) => track.stop());
-    sessionRef.current?.close();
+    sessionsRef.current.forEach((session) => session.close());
     void inputContextRef.current?.close();
     void outputContextRef.current?.close();
     processorRef.current = null;
     streamRef.current = null;
-    sessionRef.current = null;
+    sessionsRef.current = [];
     inputContextRef.current = null;
     outputContextRef.current = null;
     nextPlayTimeRef.current = 0;
+    connectedSessionsRef.current = 0;
     setListening(false);
     setConnecting(false);
     setStatus(message);
@@ -101,13 +86,17 @@ export default function Home() {
     setTranslatedText("");
 
     try {
-      const tokenResponse = await fetch("/api/gemini-session", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ targetLanguage: copy.targetLanguage }),
-      });
-      const tokenData = await tokenResponse.json() as { token?: string; error?: string };
-      if (!tokenResponse.ok || !tokenData.token) throw new Error(tokenData.error || "تعذر إنشاء جلسة Gemini");
+      const createToken = async (targetLanguage: "ar" | "en") => {
+        const response = await fetch("/api/gemini-session", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ targetLanguage }),
+        });
+        const data = await response.json() as { token?: string; error?: string };
+        if (!response.ok || !data.token) throw new Error(data.error || "تعذر إنشاء جلسة Gemini");
+        return data.token;
+      };
+      const [arabicToken, englishToken] = await Promise.all([createToken("ar"), createToken("en")]);
 
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
@@ -117,40 +106,50 @@ export default function Home() {
       await outputContext.resume();
       outputContextRef.current = outputContext;
 
-      const ai = new GoogleGenAI({ apiKey: tokenData.token, httpOptions: { apiVersion: "v1beta" } });
-      const session = await ai.live.connect({
-        model: "gemini-3.5-live-translate-preview",
-        config: {
-          responseModalities: [Modality.AUDIO],
-          inputAudioTranscription: {},
-          outputAudioTranscription: {},
-          translationConfig: { targetLanguageCode: copy.targetLanguage, echoTargetLanguage: true },
-        },
-        callbacks: {
-          onopen: () => {
-            setConnecting(false);
-            setListening(true);
-            setStatus("متصل — تحدث الآن");
+      const connectTranslator = async (token: string, targetLanguage: "ar" | "en") => {
+        const ai = new GoogleGenAI({ apiKey: token, httpOptions: { apiVersion: "v1beta" } });
+        return ai.live.connect({
+          model: "gemini-3.5-live-translate-preview",
+          config: {
+            responseModalities: [Modality.AUDIO],
+            inputAudioTranscription: {},
+            outputAudioTranscription: {},
+            translationConfig: { targetLanguageCode: targetLanguage, echoTargetLanguage: false },
           },
-          onmessage: (message) => {
-            const content = message.serverContent;
-            if (content?.inputTranscription?.text) setSourceText((current) => current + content.inputTranscription?.text);
-            if (content?.outputTranscription?.text) setTranslatedText((current) => current + content.outputTranscription?.text);
-            for (const part of content?.modelTurn?.parts || []) {
-              if (part.inlineData?.data) playAudio(part.inlineData.data);
-            }
+          callbacks: {
+            onopen: () => {
+              connectedSessionsRef.current += 1;
+              if (connectedSessionsRef.current === 2) {
+                setConnecting(false);
+                setListening(true);
+                setStatus("متصل — اكتشاف اللغة تلقائي");
+              }
+            },
+            onmessage: (message) => {
+              const content = message.serverContent;
+              if (targetLanguage === "ar" && content?.inputTranscription?.text) {
+                setSourceText((current) => current + content.inputTranscription?.text);
+              }
+              if (content?.outputTranscription?.text) {
+                setTranslatedText((current) => current + content.outputTranscription?.text);
+              }
+              for (const part of content?.modelTurn?.parts || []) {
+                if (part.inlineData?.data) playAudio(part.inlineData.data);
+              }
+            },
+            onerror: (event) => {
+              setError(`Gemini: ${event.message || "تعذر تشغيل الترجمة"}`);
+              closeSession("تعذر تشغيل الترجمة");
+            },
+            onclose: () => closeSession("انتهت الجلسة"),
           },
-          onerror: (event) => {
-            setError(`Gemini: ${event.message || "تعذر تشغيل الترجمة"}`);
-            closeSession("تعذر تشغيل الترجمة");
-          },
-          onclose: (event) => {
-            if (listening) setError(`انتهى اتصال Gemini: ${event.reason || "أُغلقت الجلسة"}`);
-            closeSession("انتهت الجلسة");
-          },
-        },
-      });
-      sessionRef.current = session as GeminiSession;
+        });
+      };
+      const sessions = await Promise.all([
+        connectTranslator(arabicToken, "ar"),
+        connectTranslator(englishToken, "en"),
+      ]);
+      sessionsRef.current = sessions as GeminiSession[];
 
       const inputContext = new AudioContext({ sampleRate: 16000 });
       await inputContext.resume();
@@ -160,10 +159,9 @@ export default function Home() {
       const silent = inputContext.createGain();
       silent.gain.value = 0;
       processor.onaudioprocess = (event) => {
-        if (!sessionRef.current) return;
-        sessionRef.current.sendRealtimeInput({
-          audio: { data: pcmToBase64(event.inputBuffer.getChannelData(0)), mimeType: "audio/pcm;rate=16000" },
-        });
+        if (!sessionsRef.current.length) return;
+        const audio = { data: pcmToBase64(event.inputBuffer.getChannelData(0)), mimeType: "audio/pcm;rate=16000" };
+        sessionsRef.current.forEach((session) => session.sendRealtimeInput({ audio }));
       };
       source.connect(processor);
       processor.connect(silent);
@@ -175,12 +173,6 @@ export default function Home() {
     }
   };
 
-  const switchDirection = () => {
-    if (listening || connecting) closeSession("تم تغيير اتجاه الترجمة");
-    setDirection((current) => current === "en-ar" ? "ar-en" : "en-ar");
-    setSourceText(""); setTranslatedText(""); setError("");
-  };
-
   return (
     <main className="app-shell" dir="rtl">
       <nav className="topbar">
@@ -188,25 +180,25 @@ export default function Home() {
         <div className={`live-state ${listening ? "active" : ""}`}><span className="state-dot" />{status}</div>
       </nav>
       <section className="hero">
-        <span className="eyebrow">مدعوم بـ Gemini Live Translate</span>
+        <span className="eyebrow">اكتشاف تلقائي للغة عبر Gemini</span>
         <h1>تحدّث بلغتك.<br /><em>واسْمَع لغته.</em></h1>
         <p>ترجمة صوتية مباشرة بين العربية والإنجليزية؛ يصل الصوت والنص المترجمان أثناء الحديث.</p>
       </section>
       <section className="translator-card" aria-label="المترجم الصوتي">
         <div className="language-strip">
-          <div className="language"><span className="language-code">{direction === "en-ar" ? "EN" : "ع"}</span><div><b>{copy.source}</b><small>لغة المتحدث</small></div></div>
-          <button className="swap-button" onClick={switchDirection} disabled={connecting} aria-label="عكس اتجاه الترجمة">⇄</button>
-          <div className="language"><span className="language-code target-code">{direction === "en-ar" ? "ع" : "EN"}</span><div><b>{copy.target}</b><small>لغة المستمع</small></div></div>
+          <div className="language"><span className="language-code">ع</span><div><b>العربية</b><small>تُكتشف تلقائيًا</small></div></div>
+          <span className="swap-button" aria-label="ترجمة تلقائية">⇄</span>
+          <div className="language"><span className="language-code target-code">EN</span><div><b>English</b><small>تُكتشف تلقائيًا</small></div></div>
         </div>
         <div className="conversation-grid">
           <article className={`speech-panel ${listening ? "hearing" : ""}`}>
             <header><span>الكلام المسموع</span><i>{listening ? "بث مباشر" : "في الانتظار"}</i></header>
-            <p className={sourceText ? "" : "placeholder"}>{sourceText || copy.sourcePlaceholder}</p>
+            <p className={sourceText ? "" : "placeholder"}>{sourceText || "تحدث بالعربية أو الإنجليزية…"}</p>
             <div className="wave">{Array.from({ length: 22 }).map((_, index) => <span key={index} style={{ animationDelay: `${index * 45}ms` }} />)}</div>
           </article>
           <article className="speech-panel translated-panel">
             <header><span>الترجمة المنطوقة</span><i>{translatedText ? "تصل الآن" : "تلقائية"}</i></header>
-            <p className={translatedText ? "" : "placeholder"}>{translatedText || copy.targetPlaceholder}</p>
+            <p className={translatedText ? "" : "placeholder"}>{translatedText || "ستظهر الترجمة إلى اللغة الأخرى هنا"}</p>
             <span className="audio-note">الصوت المترجم يعمل تلقائيًا عبر Gemini</span>
           </article>
         </div>
@@ -221,7 +213,7 @@ export default function Home() {
       </section>
       <section className="promise-row">
         <div><b>Gemini مباشر</b><span>ترجمة صوت إلى صوت</span></div>
-        <div><b>ثنائية الاتجاه</b><span>عربية ⇄ إنجليزية</span></div>
+        <div><b>اكتشاف تلقائي</b><span>من دون زر تبديل</span></div>
         <div><b>صوت ونص</b><span>النتيجة تصل أثناء الحديث</span></div>
       </section>
       <footer>استخدم سماعة لتجنب التقاط الميكروفون لصوت الترجمة وإعادته إلى الجلسة.</footer>
