@@ -1,3 +1,5 @@
+import { GoogleGenAI, Modality } from "@google/genai";
+
 export async function POST(request: Request) {
   try {
     const { targetLanguage } = await request.json() as { targetLanguage?: "ar" | "en" };
@@ -10,30 +12,32 @@ export async function POST(request: Request) {
       return Response.json({ error: "لم يتم ربط مفتاح Gemini بالموقع بعد" }, { status: 503 });
     }
 
-    const expireTime = new Date(Date.now() + 30 * 60 * 1000).toISOString();
-    const response = await fetch("https://generativelanguage.googleapis.com/v1beta/auth_tokens", {
-      method: "POST",
-      headers: { "x-goog-api-key": apiKey, "Content-Type": "application/json" },
-      body: JSON.stringify({
+    const client = new GoogleGenAI({ apiKey });
+    const token = await client.authTokens.create({
+      config: {
         uses: 1,
-        expireTime,
+        expireTime: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
         liveConnectConstraints: {
-          model: "models/gemini-3.5-live-translate-preview",
+          model: "gemini-3.5-live-translate-preview",
           config: {
-            responseModalities: ["AUDIO"],
+            responseModalities: [Modality.AUDIO],
             inputAudioTranscription: {},
             outputAudioTranscription: {},
-            translationConfig: { targetLanguageCode: targetLanguage, echoTargetLanguage: true },
+            translationConfig: {
+              targetLanguageCode: targetLanguage,
+              echoTargetLanguage: true,
+            },
           },
         },
-      }),
+      },
     });
-    const body = await response.json() as { name?: string; error?: { message?: string } };
-    if (!response.ok || !body.name) {
-      return Response.json({ error: body.error?.message || "تعذر إنشاء جلسة Gemini" }, { status: response.status });
+
+    if (!token.name) {
+      return Response.json({ error: "لم تُصدر Gemini رمز الجلسة" }, { status: 502 });
     }
-    return Response.json({ token: body.name });
-  } catch {
-    return Response.json({ error: "تعذر إنشاء جلسة Gemini اللحظية" }, { status: 500 });
+    return Response.json({ token: token.name });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "تعذر إنشاء جلسة Gemini اللحظية";
+    return Response.json({ error: message }, { status: 500 });
   }
 }
