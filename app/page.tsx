@@ -183,7 +183,7 @@ export default function Home() {
         let energy = 0;
         for (let index = 0; index < samples.length; index += 1) energy += samples[index] * samples[index];
         const rms = Math.sqrt(energy / samples.length);
-        const threshold = Math.max(0.014, noiseFloorRef.current * 2.8);
+        const threshold = Math.max(0.0045, noiseFloorRef.current * 1.55);
         const encoded = pcmToBase64(samples);
 
         preRollRef.current.push(encoded);
@@ -192,7 +192,7 @@ export default function Home() {
         if (rms > threshold) {
           speechFramesRef.current += 1;
           silenceFramesRef.current = 0;
-          if (!transmittingRef.current && speechFramesRef.current >= 2) {
+          if (!transmittingRef.current && speechFramesRef.current >= 1) {
             transmittingRef.current = true;
             setStatus("صوت بشري مكتشف — يترجم الآن");
             for (const buffered of preRollRef.current) {
@@ -205,7 +205,7 @@ export default function Home() {
         } else {
           speechFramesRef.current = 0;
           if (!transmittingRef.current) {
-            noiseFloorRef.current = noiseFloorRef.current * 0.96 + rms * 0.04;
+            noiseFloorRef.current = noiseFloorRef.current * 0.985 + rms * 0.015;
             return;
           }
           silenceFramesRef.current += 1;
@@ -214,7 +214,7 @@ export default function Home() {
         if (transmittingRef.current) {
           const audio = { data: encoded, mimeType: "audio/pcm;rate=16000" };
           sessionsRef.current.forEach((session) => session.sendRealtimeInput({ audio }));
-          if (silenceFramesRef.current >= 9) {
+          if (silenceFramesRef.current >= 16) {
             transmittingRef.current = false;
             silenceFramesRef.current = 0;
             setStatus("متصل — ينتظر صوتًا بشريًا");
