@@ -1,0 +1,10 @@
+{
+  "name": "SpeakFlow AI — Personal English Coach",
+  "short_name": "SpeakFlow AI",
+  "description": "A live, voice-first English speaking coach that remembers you.",
+  "start_url": "/dashboard",
+  "display": "standalone",
+  "background_color": "#0a0f1f",
+  "theme_color": "#0a0f1f",
+  "icons": []
+}
