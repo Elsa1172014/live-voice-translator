@@ -2,9 +2,10 @@ import { clerkMiddleware, createRouteMatcher } from '@clerk/nextjs/server';
 
 const isPublicRoute = createRouteMatcher([
   '/',
+  '/ar.html',
   '/sign-in(.*)',
   '/sign-up(.*)',
-  '/api/gemini/token', // still checks auth() internally; route itself must be reachable pre-redirect
+  '/api/gemini/token',
 ]);
 
 export default clerkMiddleware(async (auth, req) => {
